@@ -1,10 +1,10 @@
 bl_info = {
-    "name": "Quake 2 BSP to MAP - Compilation Ready",
+    "name": "Quake 2 BSP to MAP - Final Clean",
     "blender": (3, 0, 0),
     "category": "Import-Export",
-    "version": (3, 0, 0),
-    "author": "BSP Tools Professional",
-    "description": "BSP to MAP converter that produces compilable maps",
+    "version": (4, 0, 0),
+    "author": "BSP Tools",
+    "description": "Complete BSP to MAP converter",
     "support": "COMMUNITY"
 }
 
@@ -21,23 +21,18 @@ from decimal import Decimal, ROUND_HALF_UP
 # Constants
 BSP_MAGIC = b'IBSP'
 BSP_VERSION_Q2 = 38
-COMPILE_EPSILON = 0.125  # Minimum edge size for qbsp
-GRID_SNAP = 0.25  # Grid snapping for coordinates
+COMPILE_EPSILON = 0.125
+GRID_SNAP = 0.25
 
 # Content flags
 CONTENTS_SOLID = 1
 CONTENTS_WINDOW = 2
-CONTENTS_AUX = 4
-CONTENTS_LAVA = 8
-CONTENTS_SLIME = 16
 CONTENTS_WATER = 32
 CONTENTS_AREAPORTAL = 0x8000
 
-# Surface flags
+# Surface flags  
 SURF_NODRAW = 0x80
 SURF_SKY = 0x4
-SURF_HINT = 0x100
-SURF_SKIP = 0x200
 
 class SimplePlane:
     def __init__(self, normal_x, normal_y, normal_z, distance, plane_type):
@@ -67,25 +62,24 @@ class SimpleTexInfo:
         self.texture_name = texture_name
 
 def snap_to_grid(value, grid_size=GRID_SNAP):
-    """Snap coordinate to grid for clean geometry"""
+    """Snap coordinate to grid"""
     return round(value / grid_size) * grid_size
 
 def round_coordinate(value, decimals=3):
-    """Round coordinate to prevent tiny edges"""
-    # Use decimal for precise rounding
+    """Round coordinate precisely"""
     d = Decimal(str(value))
     rounded = d.quantize(Decimal(10) ** -decimals, rounding=ROUND_HALF_UP)
     return float(rounded)
 
 def normalize_vector(vec):
-    """Normalize a vector safely"""
+    """Normalize vector safely"""
     length = math.sqrt(vec[0]**2 + vec[1]**2 + vec[2]**2)
     if length > 0.001:
         return Vector((vec[0]/length, vec[1]/length, vec[2]/length))
     return Vector((0, 0, 1))
 
 def cross_product(a, b):
-    """Calculate cross product"""
+    """Cross product"""
     return Vector((
         a[1] * b[2] - a[2] * b[1],
         a[2] * b[0] - a[0] * b[2],
@@ -94,7 +88,6 @@ def cross_product(a, b):
 
 def validate_brush_geometry(points):
     """Check if brush geometry is valid"""
-    # Check for degenerate edges
     for i in range(3):
         for j in range(i+1, 3):
             edge = Vector(points[j]) - Vector(points[i])
@@ -102,27 +95,11 @@ def validate_brush_geometry(points):
                 return False, f"Degenerate edge ({edge.length:.6f})"
     return True, None
 
-def fix_texture_name(name):
-    """Fix texture names for compilation"""
-    if not name or name == "":
-        return "MISSING"
-    
-    # Remove problematic characters
-    name = name.replace('\x00', '').strip()
-    
-    # Handle special textures
-    if name.startswith('*'):  # Water textures
-        return name
-    if name.upper() in ['CLIP', 'NODRAW', 'SKIP', 'HINT', 'AREAPORTAL']:
-        return name.upper()
-    
-    return name
-
-class BSP_OT_import_compilable(Operator, ImportHelper):
-    """BSP to MAP converter that produces compilable maps"""
-    bl_idname = "import_scene.bsp_to_map_compilable"
-    bl_label = "Import BSP to MAP (Compilable)"
-    bl_description = "Convert BSP to compilable MAP format"
+class BSPtoMAPConverter(Operator, ImportHelper):
+    """Convert BSP to MAP format"""
+    bl_idname = "import_scene.bsp_map_final"
+    bl_label = "Import BSP to MAP"
+    bl_description = "Convert BSP to MAP"
     bl_options = {'PRESET', 'UNDO'}
     
     filename_ext = ".bsp"
@@ -131,57 +108,95 @@ class BSP_OT_import_compilable(Operator, ImportHelper):
     # Properties
     grid_snap: FloatProperty(
         name="Grid Snap",
-        description="Snap coordinates to grid",
+        description="Snap to grid",
         default=0.25,
         min=0.125,
         max=16.0
     )
     
     coordinate_decimals: IntProperty(
-        name="Coordinate Decimals",
-        description="Decimal places for coordinates",
+        name="Decimals",
+        description="Coordinate precision",
         default=3,
         min=0,
         max=6
     )
     
     min_edge_length: FloatProperty(
-        name="Min Edge Length",
-        description="Minimum edge length to prevent degenerate edges",
+        name="Min Edge",
+        description="Minimum edge length",
         default=0.125,
         min=0.01,
         max=1.0
     )
     
-    fix_areaportal: BoolProperty(
-        name="Fix Area Portals",
-        description="Attempt to fix func_areaportal entities",
+    default_texture: StringProperty(
+        name="Default Texture",
+        description="Default texture name",
+        default="e1u1/metal1_2"
+    )
+    
+    fix_textures: BoolProperty(
+        name="Fix Textures",
+        description="Fix texture paths",
         default=True
     )
     
-    skip_problem_brushes: BoolProperty(
-        name="Skip Problem Brushes",
-        description="Skip brushes that would cause compile errors",
+    skip_problems: BoolProperty(
+        name="Skip Problems",
+        description="Skip problem brushes",
         default=True
     )
     
-    verbose: BoolProperty(
-        name="Verbose Output",
-        description="Print detailed information",
+    show_info: BoolProperty(
+        name="Show Info",
+        description="Show detailed info",
         default=True
     )
+    
+    def fix_texture_name(self, name):
+        """Fix texture name"""
+        if not name or name == "" or name == "MISSING":
+            return self.default_texture
+        
+        name = name.replace('\x00', '').strip()
+        
+        if not name:
+            return self.default_texture
+        
+        # Special textures
+        if name.startswith('*'):
+            return name
+        if name.upper() in ['CLIP', 'NODRAW', 'SKIP', 'HINT', 'AREAPORTAL']:
+            return name.upper()
+        
+        # Add texture path if missing
+        if self.fix_textures and '/' not in name and not name.startswith('*'):
+            name_lower = name.lower()
+            
+            if 'metal' in name_lower:
+                return f"e1u1/{name}"
+            elif 'wall' in name_lower:
+                return f"e1u2/{name}"
+            elif 'floor' in name_lower or 'flr' in name_lower:
+                return f"e1u3/{name}"
+            elif 'crate' in name_lower:
+                return f"e2u3/{name}"
+            elif 'rock' in name_lower:
+                return f"e3u1/{name}"
+            else:
+                return f"e1u1/{name}"
+        
+        return name
     
     def execute(self, context):
-        """Execute the conversion"""
+        """Execute conversion"""
         print("\n" + "="*60)
-        print("BSP TO MAP - COMPILABLE VERSION")
+        print("BSP TO MAP CONVERTER - FINAL")
         print("="*60)
-        print(f"File: {self.filepath}")
-        print(f"Grid snap: {self.grid_snap}")
-        print(f"Min edge: {self.min_edge_length}")
         
         try:
-            # Read BSP file
+            # Read file
             with open(self.filepath, 'rb') as f:
                 data = f.read()
             
@@ -216,37 +231,29 @@ class BSP_OT_import_compilable(Operator, ImportHelper):
             texinfos = []
             entities_string = ""
             
-            # Parse entities
+            # Entities
             if lumps[0][1] > 0:
                 entity_data = data[lumps[0][0]:lumps[0][0] + lumps[0][1]]
                 entities_string = entity_data.decode('ascii', errors='ignore').strip('\x00')
                 print(f"Found {len(entities_string)} bytes of entities")
             
-            # Parse planes
+            # Planes
             if lumps[1][1] > 0:
                 plane_data = data[lumps[1][0]:lumps[1][0] + lumps[1][1]]
-                num_planes = len(plane_data) // 20
-                
-                for i in range(num_planes):
-                    offset = i * 20
-                    if offset + 20 <= len(plane_data):
-                        nx, ny, nz, dist, ptype = struct.unpack('<ffffI', plane_data[offset:offset+20])
+                for i in range(0, len(plane_data), 20):
+                    if i + 20 <= len(plane_data):
+                        nx, ny, nz, dist, ptype = struct.unpack('<ffffI', plane_data[i:i+20])
                         planes.append(SimplePlane(nx, ny, nz, dist, ptype))
-                
                 print(f"Parsed {len(planes)} planes")
             
-            # Parse textures
+            # Textures
             if lumps[5][1] > 0:
                 texinfo_data = data[lumps[5][0]:lumps[5][0] + lumps[5][1]]
                 TEXINFO_SIZE = 76
-                num_texinfos = len(texinfo_data) // TEXINFO_SIZE
-                
-                for i in range(num_texinfos):
-                    offset = i * TEXINFO_SIZE
-                    if offset + TEXINFO_SIZE <= len(texinfo_data):
+                for i in range(0, len(texinfo_data), TEXINFO_SIZE):
+                    if i + TEXINFO_SIZE <= len(texinfo_data):
                         try:
-                            tex_data = struct.unpack('<8f2I32sI', texinfo_data[offset:offset+TEXINFO_SIZE])
-                            
+                            tex_data = struct.unpack('<8f2I32sI', texinfo_data[i:i+TEXINFO_SIZE])
                             u_axis = Vector((tex_data[0], tex_data[1], tex_data[2]))
                             u_offset = tex_data[3]
                             v_axis = Vector((tex_data[4], tex_data[5], tex_data[6]))
@@ -255,76 +262,52 @@ class BSP_OT_import_compilable(Operator, ImportHelper):
                             value = tex_data[9]
                             texture_name = tex_data[10].decode('ascii', errors='ignore').strip('\x00')
                             
-                            texinfos.append(SimpleTexInfo(u_axis, u_offset, v_axis, v_offset, 
+                            if not texture_name:
+                                texture_name = self.default_texture
+                            
+                            texinfos.append(SimpleTexInfo(u_axis, u_offset, v_axis, v_offset,
                                                          flags, value, texture_name))
                         except:
                             texinfos.append(SimpleTexInfo(
                                 Vector((1, 0, 0)), 0, Vector((0, -1, 0)), 0,
-                                0, 0, "MISSING"
+                                0, 0, self.default_texture
                             ))
-                
                 print(f"Parsed {len(texinfos)} texinfos")
             
-            # Parse brushes
+            # Brushes
             if lumps[14][1] > 0:
                 brush_data = data[lumps[14][0]:lumps[14][0] + lumps[14][1]]
-                num_brushes = len(brush_data) // 12
-                
-                for i in range(num_brushes):
-                    offset = i * 12
-                    if offset + 12 <= len(brush_data):
-                        first_side, num_sides, contents = struct.unpack('<III', brush_data[offset:offset+12])
+                for i in range(0, len(brush_data), 12):
+                    if i + 12 <= len(brush_data):
+                        first_side, num_sides, contents = struct.unpack('<III', brush_data[i:i+12])
                         brushes.append(SimpleBrush(first_side, num_sides, contents))
-                
                 print(f"Parsed {len(brushes)} brushes")
             
-            # Parse brush sides
+            # Brush sides
             if lumps[15][1] > 0:
                 side_data = data[lumps[15][0]:lumps[15][0] + lumps[15][1]]
-                num_sides = len(side_data) // 4
-                
-                for i in range(num_sides):
-                    offset = i * 4
-                    if offset + 4 <= len(side_data):
-                        plane_num, tex_info = struct.unpack('<HH', side_data[offset:offset+4])
+                for i in range(0, len(side_data), 4):
+                    if i + 4 <= len(side_data):
+                        plane_num, tex_info = struct.unpack('<HH', side_data[i:i+4])
                         brush_sides.append(SimpleBrushSide(plane_num, tex_info))
-                
                 print(f"Parsed {len(brush_sides)} brush sides")
             
-            # Create MAP file
-            map_path = os.path.splitext(self.filepath)[0] + '_compilable.map'
+            # Create MAP
+            map_path = os.path.splitext(self.filepath)[0] + '_final.map'
             print(f"\nWriting MAP: {map_path}")
             
             valid_brushes = 0
             skipped_brushes = 0
-            fixed_brushes = 0
-            areaportal_count = 0
+            texture_stats = {}
             
             with open(map_path, 'w') as f:
                 # Header
-                f.write('// BSP to MAP - Compilable Version\n')
-                f.write(f'// Grid snap: {self.grid_snap}\n')
-                f.write(f'// Min edge: {self.min_edge_length}\n\n')
+                f.write('// BSP to MAP Conversion\n\n')
                 
                 # Worldspawn
                 f.write('{\n')
                 f.write('"classname" "worldspawn"\n')
                 f.write('"mapversion" "220"\n')
-                
-                # Parse worldspawn properties from entities
-                if entities_string:
-                    lines = entities_string.split('\n')
-                    in_worldspawn = False
-                    for line in lines:
-                        line = line.strip()
-                        if '"classname" "worldspawn"' in line:
-                            in_worldspawn = True
-                        elif line == '}' and in_worldspawn:
-                            break
-                        elif in_worldspawn and '"' in line and 'classname' not in line:
-                            # Skip problematic properties
-                            if not any(skip in line for skip in ['_tb_', 'wad', 'mapversion']):
-                                f.write(line + '\n')
                 
                 # Process brushes
                 for brush_idx, brush in enumerate(brushes):
@@ -333,14 +316,13 @@ class BSP_OT_import_compilable(Operator, ImportHelper):
                         skipped_brushes += 1
                         continue
                     
-                    # Skip empty brushes
                     if brush.contents == 0:
                         skipped_brushes += 1
                         continue
                     
-                    # Skip areaportal brushes for now
+                    # Skip areaportal
                     if brush.contents & CONTENTS_AREAPORTAL:
-                        areaportal_count += 1
+                        skipped_brushes += 1
                         continue
                     
                     # Get planes
@@ -353,22 +335,26 @@ class BSP_OT_import_compilable(Operator, ImportHelper):
                             side = brush_sides[side_idx]
                             if side.plane_num < len(planes):
                                 brush_planes.append(planes[side.plane_num])
+                                
                                 if side.tex_info < len(texinfos):
                                     brush_texinfos.append(texinfos[side.tex_info])
+                                elif len(texinfos) > 0:
+                                    brush_texinfos.append(texinfos[0])
                                 else:
-                                    brush_texinfos.append(None)
+                                    brush_texinfos.append(SimpleTexInfo(
+                                        Vector((1, 0, 0)), 0, Vector((0, -1, 0)), 0,
+                                        0, 0, self.default_texture
+                                    ))
                     
                     if len(brush_planes) >= 4:
                         try:
-                            # Check if brush will be valid
                             brush_valid = True
                             brush_lines = []
                             
                             for i, plane in enumerate(brush_planes):
-                                # Calculate three points with grid snapping
+                                # Calculate points
                                 normal = normalize_vector(plane.normal)
                                 
-                                # Find tangent vectors
                                 if abs(normal[2]) < 0.9:
                                     tangent1 = normalize_vector(cross_product(normal, Vector((0, 0, 1))))
                                 else:
@@ -376,23 +362,21 @@ class BSP_OT_import_compilable(Operator, ImportHelper):
                                 
                                 tangent2 = normalize_vector(cross_product(normal, tangent1))
                                 
-                                # Create points with larger scale to avoid degenerate edges
-                                scale = 256  # Larger scale
+                                scale = 256
                                 center = normal * plane.distance
                                 
-                                # Snap center to grid
+                                # Snap to grid
                                 center = Vector((
                                     snap_to_grid(center[0], self.grid_snap),
                                     snap_to_grid(center[1], self.grid_snap),
                                     snap_to_grid(center[2], self.grid_snap)
                                 ))
                                 
-                                # Create points
                                 p1 = center + tangent1 * scale
                                 p2 = center - tangent1 * scale
                                 p3 = center + tangent2 * scale
                                 
-                                # Snap points to grid
+                                # Snap points
                                 p1 = Vector((
                                     snap_to_grid(p1[0], self.grid_snap),
                                     snap_to_grid(p1[1], self.grid_snap),
@@ -409,15 +393,13 @@ class BSP_OT_import_compilable(Operator, ImportHelper):
                                     snap_to_grid(p3[2], self.grid_snap)
                                 ))
                                 
-                                # Validate geometry
+                                # Validate
                                 valid, error = validate_brush_geometry([p1, p2, p3])
-                                if not valid and self.skip_problem_brushes:
-                                    if self.verbose:
-                                        print(f"  Brush {brush_idx}: Skipped - {error}")
+                                if not valid and self.skip_problems:
                                     brush_valid = False
                                     break
                                 
-                                # Round coordinates
+                                # Round
                                 p1 = Vector((
                                     round_coordinate(p1[0], self.coordinate_decimals),
                                     round_coordinate(p1[1], self.coordinate_decimals),
@@ -434,7 +416,7 @@ class BSP_OT_import_compilable(Operator, ImportHelper):
                                     round_coordinate(p3[2], self.coordinate_decimals)
                                 ))
                                 
-                                # Build plane line
+                                # Build line
                                 line = f'( {p1[0]} {p1[1]} {p1[2]} ) '
                                 line += f'( {p2[0]} {p2[1]} {p2[2]} ) '
                                 line += f'( {p3[0]} {p3[1]} {p3[2]} ) '
@@ -442,9 +424,12 @@ class BSP_OT_import_compilable(Operator, ImportHelper):
                                 # Texture
                                 if i < len(brush_texinfos) and brush_texinfos[i]:
                                     tex = brush_texinfos[i]
-                                    name = fix_texture_name(tex.texture_name)
+                                    name = self.fix_texture_name(tex.texture_name)
                                     
-                                    # Round texture coordinates
+                                    if name not in texture_stats:
+                                        texture_stats[name] = 0
+                                    texture_stats[name] += 1
+                                    
                                     u_axis = Vector((
                                         round_coordinate(tex.u_axis[0], 3),
                                         round_coordinate(tex.u_axis[1], 3),
@@ -455,6 +440,12 @@ class BSP_OT_import_compilable(Operator, ImportHelper):
                                         round_coordinate(tex.v_axis[1], 3),
                                         round_coordinate(tex.v_axis[2], 3)
                                     ))
+                                    
+                                    if u_axis.length < 0.01:
+                                        u_axis = Vector((1, 0, 0))
+                                    if v_axis.length < 0.01:
+                                        v_axis = Vector((0, -1, 0))
+                                    
                                     u_offset = round_coordinate(tex.u_offset, 2)
                                     v_offset = round_coordinate(tex.v_offset, 2)
                                     
@@ -463,30 +454,33 @@ class BSP_OT_import_compilable(Operator, ImportHelper):
                                     line += f'[ {v_axis[0]} {v_axis[1]} {v_axis[2]} {v_offset} ] '
                                     line += '0 1 1'
                                 else:
-                                    line += 'MISSING [ 1 0 0 0 ] [ 0 -1 0 0 ] 0 1 1'
+                                    default_tex = self.default_texture
+                                    if default_tex not in texture_stats:
+                                        texture_stats[default_tex] = 0
+                                    texture_stats[default_tex] += 1
+                                    
+                                    line += f'{default_tex} [ 1 0 0 0 ] [ 0 -1 0 0 ] 0 1 1'
                                 
                                 brush_lines.append(line)
                             
-                            # Write brush if valid
+                            # Write brush
                             if brush_valid and brush_lines:
                                 f.write('{\n')
                                 for line in brush_lines:
                                     f.write(line + '\n')
                                 f.write('}\n')
                                 valid_brushes += 1
-                                if not valid:
-                                    fixed_brushes += 1
                             else:
                                 skipped_brushes += 1
-                            
+                        
                         except Exception as e:
-                            if self.verbose:
+                            if self.show_info:
                                 print(f"  Brush {brush_idx}: Error - {e}")
                             skipped_brushes += 1
                 
                 f.write('}\n')  # End worldspawn
                 
-                # Process entities (skip func_areaportal for now)
+                # Add other entities
                 if entities_string:
                     lines = entities_string.split('\n')
                     in_entity = False
@@ -501,7 +495,6 @@ class BSP_OT_import_compilable(Operator, ImportHelper):
                             entity_class = ""
                         elif line == '}':
                             if in_entity and entity_lines:
-                                # Check entity type
                                 for el in entity_lines:
                                     if '"classname"' in el:
                                         if '"func_areaportal"' in el:
@@ -510,7 +503,6 @@ class BSP_OT_import_compilable(Operator, ImportHelper):
                                             entity_class = "worldspawn"
                                         break
                                 
-                                # Write non-problematic entities
                                 if entity_class not in ["worldspawn", "areaportal"]:
                                     f.write('{\n')
                                     for el in entity_lines:
@@ -523,70 +515,67 @@ class BSP_OT_import_compilable(Operator, ImportHelper):
             
             # Report
             print(f"\n" + "="*60)
-            print(f"CONVERSION COMPLETE")
+            print(f"COMPLETE!")
             print(f"  Output: {map_path}")
             print(f"  Valid brushes: {valid_brushes}")
-            print(f"  Fixed brushes: {fixed_brushes}")
             print(f"  Skipped brushes: {skipped_brushes}")
-            print(f"  Areaportal brushes skipped: {areaportal_count}")
-            print(f"\nNOTE: func_areaportal entities removed to prevent compile errors")
-            print(f"      You may need to recreate them manually")
+            
+            if self.show_info and texture_stats:
+                print(f"\nTop textures:")
+                sorted_tex = sorted(texture_stats.items(), key=lambda x: x[1], reverse=True)
+                for i, (tex, count) in enumerate(sorted_tex[:5]):
+                    print(f"  {tex}: {count}")
+            
             print("="*60)
             
-            msg = f"Exported {valid_brushes} brushes ({skipped_brushes} skipped)"
-            if areaportal_count > 0:
-                msg += f"\nSkipped {areaportal_count} areaportal brushes"
-            
-            self.report({'INFO'}, msg)
+            self.report({'INFO'}, f"Exported {valid_brushes} brushes")
             return {'FINISHED'}
             
         except Exception as e:
             print(f"\nERROR: {e}")
             import traceback
             traceback.print_exc()
-            self.report({'ERROR'}, f"Conversion failed: {str(e)}")
+            self.report({'ERROR'}, f"Failed: {str(e)}")
             return {'CANCELLED'}
     
     def draw(self, context):
-        """Draw UI"""
         layout = self.layout
         
         box = layout.box()
-        box.label(text="Grid & Precision", icon='GRID')
+        box.label(text="Grid", icon='GRID')
         box.prop(self, "grid_snap")
         box.prop(self, "coordinate_decimals")
         box.prop(self, "min_edge_length")
         
         box = layout.box()
-        box.label(text="Fix Options", icon='MODIFIER_ON')
-        box.prop(self, "fix_areaportal")
-        box.prop(self, "skip_problem_brushes")
+        box.label(text="Textures", icon='TEXTURE')
+        box.prop(self, "default_texture")
+        box.prop(self, "fix_textures")
         
         box = layout.box()
-        box.label(text="Output", icon='INFO')
-        box.prop(self, "verbose")
+        box.label(text="Options", icon='SETTINGS')
+        box.prop(self, "skip_problems")
+        box.prop(self, "show_info")
 
 def menu_func_import(self, context):
-    self.layout.operator(BSP_OT_import_compilable.bl_idname, 
-                        text="Quake 2 BSP to MAP (Compilable)")
+    self.layout.operator(BSPtoMAPConverter.bl_idname, 
+                        text="Quake 2 BSP to MAP (Final)")
 
 def register():
-    print("Registering BSP to MAP Compilable Converter...")
+    print("Registering BSP to MAP Final...")
     try:
-        bpy.utils.register_class(BSP_OT_import_compilable)
+        bpy.utils.register_class(BSPtoMAPConverter)
         bpy.types.TOPBAR_MT_file_import.append(menu_func_import)
-        print("✓ Successfully registered!")
-        print("✓ Access: File > Import > Quake 2 BSP to MAP (Compilable)")
+        print("✓ Ready!")
     except Exception as e:
-        print(f"✗ Registration failed: {e}")
+        print(f"✗ Failed: {e}")
 
 def unregister():
     try:
         bpy.types.TOPBAR_MT_file_import.remove(menu_func_import)
-        bpy.utils.unregister_class(BSP_OT_import_compilable)
-        print("Unregistered")
-    except Exception as e:
-        print(f"Unregistration failed: {e}")
+        bpy.utils.unregister_class(BSPtoMAPConverter)
+    except:
+        pass
 
 if __name__ == "__main__":
     register()
